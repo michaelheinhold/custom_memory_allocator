@@ -5,14 +5,15 @@ using namespace std;
 const size_t POOL_SIZE = 10000;
 
 struct Block {
-  Block* next;
   size_t size;
 };
 
 struct FreeBlock : Block {
+  FreeBlock* next;
 };
 
 struct MemBlock : Block {
+  void* data;
 };
 
 // | FREE | -> |data (next->FREE) | FREE |
@@ -40,6 +41,12 @@ MemAllocator::MemAllocator() {
 }
 
 void* MemAllocator::my_alloc(size_t size) {
+  FreeBlock* current_free_block = free_list_head;
+  FreeBlock* last_free_block = new FreeBlock;
+  while ((size + sizeof(size_t)) > current_free_block->size) {
+    last_free_block = current_free_block;
+    current_free_block = current_free_block->next;
+  }
   // get the address that will be at the END of this block - this will be the new head of the free block we're
   // breaking up - We'll store the size in the header, this should be all thats needed. and return the address AFTER
   // the header
@@ -48,21 +55,21 @@ void* MemAllocator::my_alloc(size_t size) {
   // on its ->next, if it's nullptr we must be out of memory. IF there is one, we still need to run the check of if it's
   // large enough. Sounds like the work of a while loop?
   size_t header = size; //this may be unnecessary holding for now
-  char* block_end_addr = reinterpret_cast<char*>(free_list_head) + (size + sizeof(header)); // this accounts for both header AND allocated block
+  char* block_end_addr = reinterpret_cast<char*>(current_free_block) + (size + sizeof(header)); // this accounts for both header AND allocated block
   // using reinterpret cast here could cause some garbage on the start of the new free block, should just overwrite the size
   // well- we can't use POOL_SIZE maybe this calc needs to be done before we mess up all the data, where to store it though?
   // get through this for now
 
   // now we have the whole block we set the first bit to header. Then get the the address after header using pool + header
   // return that address
-  char* block_start_addr = reinterpret_cast<char*>(free_list_head) + sizeof(header); // should be what we return
+  char* block_start_addr = reinterpret_cast<char*>(current_free_block) + sizeof(header); // should be what we return
   // now store the header at the index
-  size_t* temp = reinterpret_cast<size_t*>(free_list_head);
+  size_t* temp = reinterpret_cast<size_t*>(current_free_block);
 
   // new free block
   FreeBlock* new_free_block = reinterpret_cast<FreeBlock*>(block_end_addr);
-  new_free_block->size = free_list_head->size - (size + sizeof(size_t));
-  free_list_head = new_free_block;
+  new_free_block->size = current_free_block->size - (size + sizeof(size_t));
+  current_free_block = new_free_block;
 
   // set temp to header
   *temp = header;
@@ -74,14 +81,10 @@ void MemAllocator::my_free(void* ptr) {
   // get header info
   FreeBlock* block_addr = reinterpret_cast<FreeBlock*>(ptr);
   char* header = reinterpret_cast<char*>(block_addr) - sizeof(size_t);
-  cout << "Address of block header (should match initial head address): " << static_cast<const void*>(header)
-    << " | Test ptr carries: "<< block_addr << endl;
-  cout << "Can I read the value at header? " << static_cast<const size_t>(*header) << endl;
   // this should spit out the data we added to the header, then we add the header size as well.
   // now we can set the start of the block addr to the free state and check if whats after it is another free block
   size_t size = static_cast<const size_t>(*header) + sizeof(size_t);
   // we check if the next block is free block
-  cout << "TEST: " << static_cast<const void*>(header + size) << " FREE: " << free_list_head << " Size: " << size << endl;
   if (static_cast<const void*>(header + size) == free_list_head) {
     // this should just mark the entire block as free and update the size to match - I dont think anyhting else is needed
     size_t new_size = free_list_head->size += size;
@@ -90,8 +93,6 @@ void MemAllocator::my_free(void* ptr) {
     // will look for refinement later - this works
     free_list_head = reinterpret_cast<FreeBlock*>(header);
     free_list_head->size = new_size;
-    // just to test:
-    cout<< free_list_head << " " << free_list_head->size << endl;
   }
   /*
   at this point the program works for adding one allocated block and removing it - No validation,
@@ -101,7 +102,17 @@ void MemAllocator::my_free(void* ptr) {
   there is a couple issues however. I planned on doing a linked list of all the free blocks. But I need to know where
   to add this new one, the order unfortunately matters. I can compare addresses with < but its going to feel
   really clunky because how the fuck do i find the correct index.
+  I'm thinking I just start at the top and step through until we find an appropriate free block. - not going for best match
+  I'll give it a go
   */
+  else
+  {
+    FreeBlock* new_free_block = reinterpret_cast<FreeBlock*>(header);
+    new_free_block->next = free_list_head;
+    new_free_block->size = size;
+    free_list_head = new_free_block;
+  }
+
 }
 
 int main() {
@@ -115,7 +126,25 @@ int main() {
   cout << "Sixty Nine is 64 bytes. Start address: " << sixty_nine << " | New free block head address: " << theHeap.free_list_head << endl;
   cout << "Free space shoud be 10k-72 now (9928), here is whats stored: " << theHeap.free_list_head->size << endl;
 
-  theHeap.my_free(sixty_nine); // should cout 64
+  int* four_twenty = reinterpret_cast<int*>(theHeap.my_alloc(420));
+  *four_twenty = 420;
+
+  cout << "Four Twenty is 420 bytes. Start address: " << four_twenty << " | New free block head address: " << theHeap.free_list_head << endl;
+  cout << "Free space shoud be 10k-72-428 now (9500), here is whats stored: " << theHeap.free_list_head->size << endl;
+
+  theHeap.my_free(sixty_nine);
+
+  cout << "Sixty Nine is freed, it was 64+8 bytes (72) old adress: " << sixty_nine << " | New free block head address: " << theHeap.free_list_head << endl;
+  cout << "Free space shoud be 10k-420 now (9572), here is whats stored: " << theHeap.free_list_head->size << endl;
+
+  int* weventy = reinterpret_cast<int*>(theHeap.my_alloc(64));
+  *weventy = 69;
+
+  cout << "weventy is 64 bytes. Start address: " << weventy << " | New free block head address: " << theHeap.free_list_head << endl;
+  cout << "Free space shoud be 10k-72 now (9500), here is whats stored: " << theHeap.free_list_head->size << endl;
+
+  cout << "Four Twenty check: " << *four_twenty << " @ " << four_twenty << endl;
+
 
   return 0;
 }
